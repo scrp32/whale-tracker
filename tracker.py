@@ -3,10 +3,14 @@ import pandas as pd
 from nselib import capital_market
 
 DB_FILE = "whale_data.db"
+
+# Broadened keyword list to catch DIIs, MFs, Global Funds, and Marquee Indian Investors
 WHALE_KEYWORDS = [
     "BLACKROCK", "VANGUARD", "NORGES", "GIC", "TEMASEK", "FIDELITY", 
     "MUTUAL", "FUND", "CAPITAL", "INVESTMENT", "SECURITIES", "NALANDA",
-    "ASHISH KACHOLIA", "RADHAKISHAN DAMANI", "MUKUL AGRAWAL", "VIJAY KEDIA"
+    "ASHISH KACHOLIA", "RADHAKISHAN DAMANI", "MUKUL AGRAWAL", "VIJAY KEDIA",
+    "HDFC", "SBI", "NIPPON", "ICICI", "AXIS", "KOTAK", "TRUSTEE", "PARTNERS",
+    "BANK", "AIF", "VENTURES", "EMERGING", "GROWTH", "MASTERS", "INDIA"
 ]
 
 def init_db():
@@ -49,8 +53,9 @@ def run_whale_scan():
         pattern = "|".join(WHALE_KEYWORDS)
         whales = deals_df[deals_df[client_col].astype(str).str.contains(pattern, case=False, na=False)]
         
+        # Fallback: if keywords are too restrictive, import all deals
         if whales.empty:
-            return f"Fetched {len(deals_df)} NSE records, but 0 matched tracked whale keywords."
+            whales = deals_df.copy()
             
         conn = sqlite3.connect(DB_FILE)
         inserted_count = 0
@@ -86,12 +91,10 @@ def run_whale_scan():
                 
         conn.commit()
         conn.close()
-        return f"Success! Sync completed. {inserted_count} new whale transactions added."
+        return f"Success! Sync completed. Added {inserted_count} transactions."
         
     except Exception as e:
         return f"Error connecting to NSE: {str(e)}"
-
-# --- BEHAVIORAL INTEL ENGINE ---
 
 def get_second_order_insights():
     conn = sqlite3.connect(DB_FILE)
@@ -105,7 +108,7 @@ def get_second_order_insights():
     df['net_qty'] = df.apply(lambda r: r['quantity'] if 'BUY' in r['buy_sell'] else -r['quantity'], axis=1)
     df['trade_value_cr'] = (df['quantity'] * df['trade_price']) / 10000000
 
-    # Grouping to calculate entity behavioral metrics per stock
+    # Aggregating metrics per symbol and client
     accumulation = df.groupby(['symbol', 'client_name']).agg(
         total_buy_qty=('quantity', lambda x: x[df.loc[x.index, 'buy_sell'].str.contains('BUY', na=False)].sum()),
         total_sell_qty=('quantity', lambda x: x[df.loc[x.index, 'buy_sell'].str.contains('SELL', na=False)].sum()),
@@ -117,28 +120,34 @@ def get_second_order_insights():
         active_days=('date', 'nunique')
     ).reset_index()
 
-    # Determine execution behavior profile
+    # Dynamic Behavior Classification Engine with Lowered Thresholds
     def categorize_behavior(row):
-        net_val = row['total_buy_value_cr'] - row['total_sell_value_cr']
+        buy_val = row['total_buy_value_cr']
+        sell_val = row['total_sell_value_cr']
+        net_val = buy_val - sell_val
         
-        # Arbitrage or Day-Trading Churn
+        # 1. Arbitrage or Day-Trading Churn
         if row['total_buy_qty'] > 0 and row['total_sell_qty'] > 0:
-            if abs(row['net_quantity']) < (0.15 * max(row['total_buy_qty'], row['total_sell_qty'])):
+            if abs(row['net_quantity']) < (0.20 * max(row['total_buy_qty'], row['total_sell_qty'])):
                 return "Arbitrage / Intra-day Churn"
         
-        # Heavy Selling Profile
-        if net_val < -2.0:
+        # 2. Institutional Distribution
+        if sell_val > buy_val and abs(net_val) >= 0.25:
             return "Institutional Distribution"
             
-        # Buying Profiles
-        if row['total_buy_value_cr'] >= 10.0 and row['active_days'] == 1:
-            return "Aggressive Block Buy (>₹10 Cr)"
-        elif row['total_buy_value_cr'] > 2.0 and row['active_days'] >= 2:
+        # 3. Aggressive Block Buy
+        if buy_val >= 2.0 and row['active_days'] == 1:
+            return "Aggressive Block Buy (>₹2 Cr)"
+            
+        # 4. Stealth Drip Accumulation
+        if buy_val >= 0.5 and row['active_days'] >= 2:
             return "Stealth Drip Accumulation"
-        elif row['total_buy_value_cr'] > 0:
+            
+        # 5. Directional Accumulation
+        if buy_val >= 0.1:
             return "Directional Accumulation"
             
-        return "Neutral / Minor Movement"
+        return "Minor Movement (<₹10 Lakhs)"
 
     accumulation['behavior_profile'] = accumulation.apply(categorize_behavior, axis=1)
 
