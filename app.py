@@ -69,10 +69,11 @@ else:
         if not filtered_df.empty:
             st.dataframe(
                 filtered_df[[
-                    'symbol', 'client_name', 'behavior_profile', 'total_buy_value_cr', 
+                    'latest_date', 'symbol', 'client_name', 'behavior_profile', 'total_buy_value_cr', 
                     'total_sell_value_cr', 'gross_value_cr', 'vwap_buy_price', 'active_days'
                 ]],
                 column_config={
+                    "latest_date": "Deal Date",
                     "behavior_profile": st.column_config.TextColumn("Market Behavior Profile"),
                     "total_buy_value_cr": st.column_config.NumberColumn("Bought (₹ Cr)", format="₹%.4f Cr"),
                     "total_sell_value_cr": st.column_config.NumberColumn("Sold (₹ Cr)", format="₹%.4f Cr"),
@@ -93,7 +94,8 @@ else:
                 column_config={
                     "distinct_whales": "Whale Count",
                     "whale_list": "Funds Involved",
-                    "total_net_value_cr": st.column_config.NumberColumn("Combined Capital (₹ Cr)", format="₹%.2f Cr")
+                    "total_net_value_cr": st.column_config.NumberColumn("Combined Capital (₹ Cr)", format="₹%.2f Cr"),
+                    "last_active": "Latest Activity Date"
                 },
                 use_container_width=True
             )
@@ -102,5 +104,9 @@ else:
         st.subheader("Raw Bulk Deals Log")
         st.dataframe(
             raw_df[['date', 'symbol', 'client_name', 'buy_sell', 'quantity', 'trade_price', 'trade_value_cr']], 
-            use_container_width=True
+            use_container_width=True,
+            column_config={
+                "date": "Transaction Date",
+                "trade_value_cr": st.column_config.NumberColumn("Trade Value (₹ Cr)", format="₹%.4f Cr")
+            }
         )
