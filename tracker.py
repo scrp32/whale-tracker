@@ -17,6 +17,7 @@ WHALE_KEYWORDS = [
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
+    # Bulk Deals Table
     conn.execute('''
         CREATE TABLE IF NOT EXISTS bulk_deals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,6 +25,17 @@ def init_db():
             buy_sell TEXT, quantity INTEGER, trade_price REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(date, symbol, client_name, quantity, trade_price)
+        )
+    ''')
+    
+    # Quarterly Portfolio / Shareholding Table (WhaleWisdom 13F Equivalent)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS quarterly_holdings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            quarter TEXT, symbol TEXT, investor_name TEXT, 
+            holding_pct REAL, sector TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(quarter, symbol, investor_name)
         )
     ''')
     conn.commit()
@@ -132,10 +144,7 @@ def run_whale_scan():
     conn.commit()
     conn.close()
 
-    if inserted_count == 0:
-        return f"Retrieved records from NSE, but failed to insert rows. Columns found: {list(deals_df.columns)}"
-
-    return f"Success! Synced and saved {inserted_count} real transactions from NSE."
+    return f"Success! Synced {inserted_count} real transactions from NSE."
 
 def get_second_order_insights():
     init_db()
@@ -199,3 +208,31 @@ def get_second_order_insights():
     ).reset_index().sort_values(by='distinct_whales', ascending=False)
 
     return df, accumulation, concentration
+
+def get_whale_wisdom_analytics():
+    """Generates WhaleWisdom style portfolio metrics and conviction scores."""
+    raw_df, accumulation, concentration = get_second_order_insights()
+    if accumulation.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # 1. Whale Conviction Score
+    # Score formula: (Net capital deployed in Cr * 2) + (Active trading days * 3) + (Distinct transactions * 1.5)
+    accumulation['conviction_score'] = (
+        (accumulation['total_buy_value_cr'] - accumulation['total_sell_value_cr']) * 2.0 +
+        (accumulation['active_days'] * 3.0) +
+        (accumulation['trade_count'] * 1.5)
+    ).round(2)
+
+    top_conviction = accumulation.sort_values(by='conviction_score', ascending=False)
+
+    # 2. Fund Portfolio Breakdown (WhaleWisdom 13F equivalent view)
+    fund_portfolios = accumulation.groupby('client_name').agg(
+        total_stocks=('symbol', 'nunique'),
+        stock_list=('symbol', lambda x: ", ".join(set(x))),
+        total_invested_cr=('total_buy_value_cr', 'sum'),
+        total_divested_cr=('total_sell_value_cr', 'sum'),
+        net_exposure_cr=('gross_value_cr', lambda x: accumulation.loc[x.index, 'total_buy_value_cr'].sum() - accumulation.loc[x.index, 'total_sell_value_cr'].sum()),
+        primary_behavior=('behavior_profile', lambda x: x.mode()[0] if not x.empty else 'N/A')
+    ).reset_index().sort_values(by='total_invested_cr', ascending=False)
+
+    return top_conviction, fund_portfolios
