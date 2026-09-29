@@ -6,10 +6,10 @@ from tracker import run_whale_scan, DB_FILE
 st.set_page_config(page_title="India Whale Tracker", layout="wide")
 st.title("🐋 India Institutional Whale Tracker")
 
-if st.button("⚡ Fetch Today's Deals"):
-    with st.spinner("Fetching NSE Data..."):
-        run_whale_scan()
-    st.rerun()
+if st.button("⚡ Fetch Deals"):
+    with st.spinner("Connecting to NSE..."):
+        status_message = run_whale_scan()
+    st.info(status_message)
 
 conn = sqlite3.connect(DB_FILE)
 try:
@@ -26,4 +26,4 @@ if not df.empty:
         use_container_width=True
     )
 else:
-    st.info("No data yet. Click 'Fetch Today's Deals' above.")
+    st.warning("No data stored yet. Click 'Fetch Deals' above to pull recent data.")
