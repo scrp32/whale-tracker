@@ -37,7 +37,6 @@ def clean_numeric(val):
     return float(match.group()) if match else 0.0
 
 def fetch_nse_direct_api(from_date_str, to_date_str):
-    """Fallback fetcher querying NSE bulk deal endpoint directly with browser headers."""
     session = requests.Session()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -46,7 +45,6 @@ def fetch_nse_direct_api(from_date_str, to_date_str):
         'Referer': 'https://www.nseindia.com/reports/bulk-block-deals'
     }
     try:
-        # Establish session cookies first
         session.get("https://www.nseindia.com", headers=headers, timeout=10)
         url = f"https://www.nseindia.com/api/historical/bulk-deals?from={from_date_str}&to={to_date_str}"
         res = session.get(url, headers=headers, timeout=15)
@@ -59,14 +57,12 @@ def fetch_nse_direct_api(from_date_str, to_date_str):
     return None
 
 def fetch_live_nse_deals():
-    """Tries nselib first across multiple date formats, then falls back to direct NSE REST API."""
     end_d = datetime.now()
     start_d = end_d - timedelta(days=30)
     
     from_str = start_d.strftime('%d-%m-%Y')
     to_str = end_d.strftime('%d-%m-%Y')
     
-    # 1. Attempt via nselib explicit dates
     try:
         df = capital_market.bulk_deal_data(from_date=from_str, to_date=to_str)
         if df is not None and not df.empty:
@@ -74,7 +70,6 @@ def fetch_live_nse_deals():
     except Exception:
         pass
 
-    # 2. Attempt via nselib period
     try:
         df = capital_market.bulk_deal_data(period='1M')
         if df is not None and not df.empty:
@@ -82,7 +77,6 @@ def fetch_live_nse_deals():
     except Exception:
         pass
 
-    # 3. Direct REST API session with NSE India
     return fetch_nse_direct_api(from_str, to_str)
 
 def run_whale_scan():
@@ -90,23 +84,17 @@ def run_whale_scan():
     deals_df = fetch_live_nse_deals()
 
     if deals_df is None or deals_df.empty:
-        return "NSE API returned no records for the last 30 days. NSE servers may be blocking automated requests or offline right now."
+        return "NSE API returned no records for the last 30 days."
 
-    # Standardize column names
     deals_df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in deals_df.columns]
     
-    # Comprehensive Column Detection Strategy
-    client_col = next((c for c in deals_df.columns if any(k in c for k in ['client', 'party', 'investor', 'acquirer', 'user'])), None)
+    client_col = next((c for c in deals_df.columns if any(k in c for k in ['client', 'party', 'investor', 'acquirer'])), None)
     qty_col = next((c for c in deals_df.columns if any(k in c for k in ['quantity', 'qty', 'shares', 'vol'])), None)
     price_col = next((c for c in deals_df.columns if any(k in c for k in ['price', 'rate', 'avg', 'val'])), None)
     action_col = next((c for c in deals_df.columns if any(k in c for k in ['buy_sell', 'buy/sell', 'type', 'side', 'transaction'])), None)
     symbol_col = next((c for c in deals_df.columns if any(k in c for k in ['symbol', 'ticker', 'security', 'company'])), None)
-    date_col = next((c for c in deals_df.columns if any(k in c for k in ['date', 'time', 'dt'])), None)
+    date_col = next((c for c in deals_df.columns if any(k in c for k in ['date', 'time', 'dt', 'period'])), None)
 
-    # Fallbacks if keyword matching failed on column headers
-    if not client_col and len(deals_df.columns) >= 3:
-        client_col = deals_df.columns[2]
-    
     pattern = "|".join(WHALE_KEYWORDS)
     if client_col and client_col in deals_df.columns:
         whales = deals_df[deals_df[client_col].astype(str).str.contains(pattern, case=False, na=False)]
@@ -120,10 +108,10 @@ def run_whale_scan():
     
     for _, row in whales.iterrows():
         try:
-            date_val = str(row[date_col]) if date_col and date_col in row and pd.notna(row[date_col]) else datetime.now().strftime('%d-%b-%Y')
-            symbol_val = str(row[symbol_col]) if symbol_col and symbol_col in row and pd.notna(row[symbol_col]) else "N/A"
-            client_val = str(row[client_col]) if client_col and client_col in row and pd.notna(row[client_col]) else "Unknown"
-            action_val = str(row[action_col]).upper() if action_col and action_col in row and pd.notna(row[action_col]) else "BUY"
+            date_val = str(row[date_col]).strip() if date_col and date_col in row and pd.notna(row[date_col]) else "Unknown Date"
+            symbol_val = str(row[symbol_col]).strip() if symbol_col and symbol_col in row and pd.notna(row[symbol_col]) else "N/A"
+            client_val = str(row[client_col]).strip() if client_col and client_col in row and pd.notna(row[client_col]) else "Unknown"
+            action_val = str(row[action_col]).upper().strip() if action_col and action_col in row and pd.notna(row[action_col]) else "BUY"
             
             qty_val = int(clean_numeric(row[qty_col])) if qty_col and qty_col in row else 0
             price_val = clean_numeric(row[price_col]) if price_col and price_col in row else 0.0
@@ -145,7 +133,7 @@ def run_whale_scan():
     conn.close()
 
     if inserted_count == 0:
-        return f"Retrieved {len(deals_df)} raw records from NSE, but could not parse quantity/price values from headers: {list(deals_df.columns)}"
+        return f"Retrieved records from NSE, but failed to insert rows. Columns found: {list(deals_df.columns)}"
 
     return f"Success! Synced and saved {inserted_count} real transactions from NSE."
 
@@ -166,14 +154,15 @@ def get_second_order_insights():
     df['trade_value_cr'] = (df['quantity'] * df['trade_price']) / 10000000.0
 
     accumulation = df.groupby(['symbol', 'client_name']).agg(
+        latest_date=('date', 'max'),
+        active_days=('date', 'nunique'),
         total_buy_qty=('quantity', lambda x: x[df.loc[x.index, 'buy_sell'].str.contains('BUY', na=False)].sum()),
         total_sell_qty=('quantity', lambda x: x[df.loc[x.index, 'buy_sell'].str.contains('SELL', na=False)].sum()),
         net_quantity=('net_qty', 'sum'),
         vwap_buy_price=('trade_price', lambda p: (p * df.loc[p.index, 'quantity']).sum() / df.loc[p.index, 'quantity'].sum() if df.loc[p.index, 'quantity'].sum() > 0 else 0),
         total_buy_value_cr=('trade_value_cr', lambda v: v[df.loc[v.index, 'buy_sell'].str.contains('BUY', na=False)].sum()),
         total_sell_value_cr=('trade_value_cr', lambda v: v[df.loc[v.index, 'buy_sell'].str.contains('SELL', na=False)].sum()),
-        trade_count=('id', 'count'),
-        active_days=('date', 'nunique')
+        trade_count=('id', 'count')
     ).reset_index()
 
     accumulation['gross_value_cr'] = accumulation['total_buy_value_cr'] + accumulation['total_sell_value_cr']
@@ -182,24 +171,19 @@ def get_second_order_insights():
         buy_val = row['total_buy_value_cr']
         sell_val = row['total_sell_value_cr']
         
-        # Arbitrage / Churn
         if row['total_buy_qty'] > 0 and row['total_sell_qty'] > 0:
             if abs(row['net_quantity']) < (0.25 * max(row['total_buy_qty'], row['total_sell_qty'])):
                 return "Arbitrage / Intra-day Churn"
         
-        # Distribution
         if sell_val > buy_val and (sell_val - buy_val) >= 0.10:
             return "Institutional Distribution"
             
-        # Block Buy
         if buy_val >= 1.0 and row['active_days'] == 1:
             return "Aggressive Block Buy (>₹1 Cr)"
             
-        # Stealth Drip
         if buy_val >= 0.25 and row['active_days'] >= 2:
             return "Stealth Drip Accumulation"
             
-        # Directional Accumulation
         if buy_val >= 0.05:
             return "Directional Accumulation (>₹5 Lakhs)"
             
@@ -210,7 +194,8 @@ def get_second_order_insights():
     concentration = df[df['buy_sell'].str.contains('BUY', na=False)].groupby('symbol').agg(
         distinct_whales=('client_name', 'nunique'),
         whale_list=('client_name', lambda x: ", ".join(set(x))),
-        total_net_value_cr=('trade_value_cr', 'sum')
+        total_net_value_cr=('trade_value_cr', 'sum'),
+        last_active=('date', 'max')
     ).reset_index().sort_values(by='distinct_whales', ascending=False)
 
     return df, accumulation, concentration
