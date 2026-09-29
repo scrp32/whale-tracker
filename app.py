@@ -10,15 +10,15 @@ st.title("🐋 Institutional Whale Intelligence (Behavioral Analysis)")
 with st.sidebar:
     st.header("Data Control")
     if st.button("⚡ Sync Live Deals from NSE", use_container_width=True):
-        with st.spinner("Connecting to NSE and scanning bulk deals..."):
+        with st.spinner("Connecting to NSE API & parsing bulk deals..."):
             status_message = run_whale_scan()
-        st.info(status_message)
+        st.sidebar.info(status_message)
         st.rerun()
 
     if st.button("🗑️ Clear Local Database", use_container_width=True):
         if os.path.exists(DB_FILE):
             os.remove(DB_FILE)
-            st.success("Database cleared.")
+            st.sidebar.success("Database cleared.")
             st.rerun()
 
 raw_df, accumulation_df, concentration_df = get_second_order_insights()
