@@ -5,7 +5,8 @@ from nselib import capital_market
 DB_FILE = "whale_data.db"
 WHALE_KEYWORDS = [
     "BLACKROCK", "VANGUARD", "NORGES", "GIC", "TEMASEK", "FIDELITY", 
-    "MUTUAL", "FUND", "CAPITAL", "INVESTMENT", "SECURITIES"
+    "MUTUAL", "FUND", "CAPITAL", "INVESTMENT", "SECURITIES", "NALANDA",
+    "ASHISH KACHOLIA", "RADHAKISHAN DAMANI", "MUKUL AGRAWAL", "VIJAY KEDIA"
 ]
 
 def init_db():
@@ -15,6 +16,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT, symbol TEXT, client_name TEXT, 
             buy_sell TEXT, quantity INTEGER, trade_price REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(date, symbol, client_name, quantity, trade_price)
         )
     ''')
@@ -24,16 +26,13 @@ def init_db():
 def run_whale_scan():
     init_db()
     try:
-        # Fetch 1 month of bulk deal data
         deals_df = capital_market.bulk_deal_data(period='1M')
         
         if deals_df is None or deals_df.empty: 
             return "No bulk deal records returned from NSE."
         
-        # Clean and normalize column names
         deals_df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in deals_df.columns]
         
-        # Safely detect client name column across various NSE response schemas
         client_col = None
         for col in ['client_name', 'client', 'clientname', 'investor_name', 'client_name_']:
             if col in deals_df.columns:
@@ -41,14 +40,12 @@ def run_whale_scan():
                 break
                 
         if not client_col:
-            # Fallback: look for any column containing 'client' or 'name'
             possible_cols = [c for c in deals_df.columns if 'client' in c or 'name' in c]
             if possible_cols:
                 client_col = possible_cols[0]
             else:
                 return f"Error: Could not identify Client column. Available columns: {list(deals_df.columns)}"
         
-        # Filter for whale keywords safely
         pattern = "|".join(WHALE_KEYWORDS)
         whales = deals_df[deals_df[client_col].astype(str).str.contains(pattern, case=False, na=False)]
         
@@ -60,7 +57,6 @@ def run_whale_scan():
         
         for _, row in whales.iterrows():
             try:
-                # Helper function to get value across multiple potential column names
                 def get_val(keys, default="N/A"):
                     for k in keys:
                         if k in row and pd.notna(row[k]):
@@ -70,13 +66,13 @@ def run_whale_scan():
                 date_val = get_val(['date', 'transaction_date', 'deal_date'], 'Recent')
                 symbol_val = get_val(['symbol', 'security_name', 'ticker'], 'N/A')
                 client_val = str(row[client_col])
-                action_val = get_val(['buy_sell', 'buy/sell', 'type', 'tx_type'], 'N/A')
+                action_val = get_val(['buy_sell', 'buy/sell', 'type', 'tx_type'], 'BUY').upper()
                 
                 raw_qty = get_val(['quantity_traded', 'quantity', 'qty', 'shares'], '0')
                 raw_price = get_val(['trade_price', 'price', 'avg_price', 'rate'], '0')
 
-                qty_val = int(float(raw_qty.replace(',', '')))
-                price_val = float(raw_price.replace(',', ''))
+                qty_val = int(float(str(raw_qty).replace(',', '')))
+                price_val = float(str(raw_price).replace(',', ''))
                 
                 conn.execute('''
                     INSERT INTO bulk_deals (date, symbol, client_name, buy_sell, quantity, trade_price)
@@ -84,13 +80,73 @@ def run_whale_scan():
                 ''', (date_val, symbol_val, client_val, action_val, qty_val, price_val))
                 inserted_count += 1
             except sqlite3.IntegrityError: 
-                pass  # Ignore duplicate records
-            except Exception as row_err:
+                pass
+            except Exception:
                 continue
                 
         conn.commit()
         conn.close()
-        return f"Success! Added {inserted_count} new whale deal records to local database."
+        return f"Success! Sync completed. {inserted_count} new whale transactions added."
         
     except Exception as e:
         return f"Error connecting to NSE: {str(e)}"
+
+# --- BEHAVIORAL INTEL ENGINE ---
+
+def get_second_order_insights():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM bulk_deals", conn)
+    conn.close()
+
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    df['buy_sell'] = df['buy_sell'].str.strip().str.upper()
+    df['net_qty'] = df.apply(lambda r: r['quantity'] if 'BUY' in r['buy_sell'] else -r['quantity'], axis=1)
+    df['trade_value_cr'] = (df['quantity'] * df['trade_price']) / 10000000
+
+    # Grouping to calculate entity behavioral metrics per stock
+    accumulation = df.groupby(['symbol', 'client_name']).agg(
+        total_buy_qty=('quantity', lambda x: x[df.loc[x.index, 'buy_sell'].str.contains('BUY', na=False)].sum()),
+        total_sell_qty=('quantity', lambda x: x[df.loc[x.index, 'buy_sell'].str.contains('SELL', na=False)].sum()),
+        net_quantity=('net_qty', 'sum'),
+        vwap_buy_price=('trade_price', lambda p: (p * df.loc[p.index, 'quantity']).sum() / df.loc[p.index, 'quantity'].sum() if df.loc[p.index, 'quantity'].sum() > 0 else 0),
+        total_buy_value_cr=('trade_value_cr', lambda v: v[df.loc[v.index, 'buy_sell'].str.contains('BUY', na=False)].sum()),
+        total_sell_value_cr=('trade_value_cr', lambda v: v[df.loc[v.index, 'buy_sell'].str.contains('SELL', na=False)].sum()),
+        trade_count=('id', 'count'),
+        active_days=('date', 'nunique')
+    ).reset_index()
+
+    # Determine execution behavior profile
+    def categorize_behavior(row):
+        net_val = row['total_buy_value_cr'] - row['total_sell_value_cr']
+        
+        # Arbitrage or Day-Trading Churn
+        if row['total_buy_qty'] > 0 and row['total_sell_qty'] > 0:
+            if abs(row['net_quantity']) < (0.15 * max(row['total_buy_qty'], row['total_sell_qty'])):
+                return "Arbitrage / Intra-day Churn"
+        
+        # Heavy Selling Profile
+        if net_val < -2.0:
+            return "Institutional Distribution"
+            
+        # Buying Profiles
+        if row['total_buy_value_cr'] >= 10.0 and row['active_days'] == 1:
+            return "Aggressive Block Buy (>₹10 Cr)"
+        elif row['total_buy_value_cr'] > 2.0 and row['active_days'] >= 2:
+            return "Stealth Drip Accumulation"
+        elif row['total_buy_value_cr'] > 0:
+            return "Directional Accumulation"
+            
+        return "Neutral / Minor Movement"
+
+    accumulation['behavior_profile'] = accumulation.apply(categorize_behavior, axis=1)
+
+    # Multi-Whale Concentration
+    concentration = df[df['buy_sell'].str.contains('BUY', na=False)].groupby('symbol').agg(
+        distinct_whales=('client_name', 'nunique'),
+        whale_list=('client_name', lambda x: ", ".join(set(x))),
+        total_net_value_cr=('trade_value_cr', 'sum')
+    ).reset_index().sort_values(by='distinct_whales', ascending=False)
+
+    return df, accumulation, concentration
