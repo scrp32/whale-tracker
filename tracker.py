@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 import re
+import requests
 from datetime import datetime, timedelta
 from nselib import capital_market
 
@@ -35,66 +36,83 @@ def clean_numeric(val):
     match = re.search(r"[-+]?\d*\.\d+|\d+", val_str)
     return float(match.group()) if match else 0.0
 
-def fetch_live_nse_deals():
-    """Attempts multiple fetch strategies from NSE via nselib."""
-    deals_df = None
-    
-    # Strategy 1: Period '1M'
+def fetch_nse_direct_api(from_date_str, to_date_str):
+    """Fallback fetcher querying NSE bulk deal endpoint directly with browser headers."""
+    session = requests.Session()
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.nseindia.com/reports/bulk-block-deals'
+    }
     try:
-        deals_df = capital_market.bulk_deal_data(period='1M')
+        # Establish session cookies first
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        url = f"https://www.nseindia.com/api/historical/bulk-deals?from={from_date_str}&to={to_date_str}"
+        res = session.get(url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            if 'data' in data and data['data']:
+                return pd.DataFrame(data['data'])
+    except Exception:
+        pass
+    return None
+
+def fetch_live_nse_deals():
+    """Tries nselib first across multiple date formats, then falls back to direct NSE REST API."""
+    end_d = datetime.now()
+    start_d = end_d - timedelta(days=30)
+    
+    from_str = start_d.strftime('%d-%m-%Y')
+    to_str = end_d.strftime('%d-%m-%Y')
+    
+    # 1. Attempt via nselib explicit dates
+    try:
+        df = capital_market.bulk_deal_data(from_date=from_str, to_date=to_str)
+        if df is not None and not df.empty:
+            return df
     except Exception:
         pass
 
-    # Strategy 2: Explicit Rolling 30-Day Date Range
-    if deals_df is None or deals_df.empty:
-        try:
-            end_d = datetime.now()
-            start_d = end_d - timedelta(days=30)
-            deals_df = capital_market.bulk_deal_data(
-                from_date=start_d.strftime('%d-%m-%Y'),
-                to_date=end_d.strftime('%d-%m-%Y')
-            )
-        except Exception:
-            pass
+    # 2. Attempt via nselib period
+    try:
+        df = capital_market.bulk_deal_data(period='1M')
+        if df is not None and not df.empty:
+            return df
+    except Exception:
+        pass
 
-    # Strategy 3: Current Month Date Range
-    if deals_df is None or deals_df.empty:
-        try:
-            end_d = datetime.now()
-            start_d = end_d.replace(day=1)
-            deals_df = capital_market.bulk_deal_data(
-                from_date=start_d.strftime('%d-%m-%Y'),
-                to_date=end_d.strftime('%d-%m-%Y')
-            )
-        except Exception:
-            pass
-
-    return deals_df
+    # 3. Direct REST API session with NSE India
+    return fetch_nse_direct_api(from_str, to_str)
 
 def run_whale_scan():
     init_db()
-    
     deals_df = fetch_live_nse_deals()
 
     if deals_df is None or deals_df.empty:
-        return "NSE API returned no bulk deal records for the selected period. Please try again during or after market hours."
+        return "NSE API returned no records for the last 30 days. NSE servers may be blocking automated requests or offline right now."
 
-    # Standardize column headers
+    # Standardize column names
     deals_df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in deals_df.columns]
     
-    # Column detection
-    client_col = next((c for c in ['client_name', 'client', 'clientname', 'investor_name', 'party_name'] if c in deals_df.columns), deals_df.columns[2])
-    qty_col = next((c for c in ['quantity_traded', 'quantity', 'qty', 'shares_traded', 'vol'] if c in deals_df.columns), None)
-    price_col = next((c for c in ['trade_price', 'price', 'avg_price', 'rate', 'wtd_avg_price'] if c in deals_df.columns), None)
-    action_col = next((c for c in ['buy_sell', 'buy/sell', 'type', 'side'] if c in deals_df.columns), None)
-    symbol_col = next((c for c in ['symbol', 'security_name', 'ticker'] if c in deals_df.columns), None)
-    date_col = next((c for c in ['date', 'transaction_date', 'deal_date'] if c in deals_df.columns), None)
+    # Comprehensive Column Detection Strategy
+    client_col = next((c for c in deals_df.columns if any(k in c for k in ['client', 'party', 'investor', 'acquirer', 'user'])), None)
+    qty_col = next((c for c in deals_df.columns if any(k in c for k in ['quantity', 'qty', 'shares', 'vol'])), None)
+    price_col = next((c for c in deals_df.columns if any(k in c for k in ['price', 'rate', 'avg', 'val'])), None)
+    action_col = next((c for c in deals_df.columns if any(k in c for k in ['buy_sell', 'buy/sell', 'type', 'side', 'transaction'])), None)
+    symbol_col = next((c for c in deals_df.columns if any(k in c for k in ['symbol', 'ticker', 'security', 'company'])), None)
+    date_col = next((c for c in deals_df.columns if any(k in c for k in ['date', 'time', 'dt'])), None)
 
-    # Filter whales; if keywords return empty, ingest all available deals
-    pattern = "|".join(WHALE_KEYWORDS)
-    whales = deals_df[deals_df[client_col].astype(str).str.contains(pattern, case=False, na=False)]
+    # Fallbacks if keyword matching failed on column headers
+    if not client_col and len(deals_df.columns) >= 3:
+        client_col = deals_df.columns[2]
     
-    if whales.empty:
+    pattern = "|".join(WHALE_KEYWORDS)
+    if client_col and client_col in deals_df.columns:
+        whales = deals_df[deals_df[client_col].astype(str).str.contains(pattern, case=False, na=False)]
+        if whales.empty:
+            whales = deals_df.copy()
+    else:
         whales = deals_df.copy()
 
     conn = sqlite3.connect(DB_FILE)
@@ -102,13 +120,13 @@ def run_whale_scan():
     
     for _, row in whales.iterrows():
         try:
-            date_val = str(row[date_col]) if date_col and pd.notna(row[date_col]) else "Recent"
-            symbol_val = str(row[symbol_col]) if symbol_col and pd.notna(row[symbol_col]) else "N/A"
-            client_val = str(row[client_col]) if pd.notna(row[client_col]) else "Unknown"
-            action_val = str(row[action_col]).upper() if action_col and pd.notna(row[action_col]) else "BUY"
+            date_val = str(row[date_col]) if date_col and date_col in row and pd.notna(row[date_col]) else datetime.now().strftime('%d-%b-%Y')
+            symbol_val = str(row[symbol_col]) if symbol_col and symbol_col in row and pd.notna(row[symbol_col]) else "N/A"
+            client_val = str(row[client_col]) if client_col and client_col in row and pd.notna(row[client_col]) else "Unknown"
+            action_val = str(row[action_col]).upper() if action_col and action_col in row and pd.notna(row[action_col]) else "BUY"
             
-            qty_val = int(clean_numeric(row[qty_col])) if qty_col else 0
-            price_val = clean_numeric(row[price_col]) if price_col else 0.0
+            qty_val = int(clean_numeric(row[qty_col])) if qty_col and qty_col in row else 0
+            price_val = clean_numeric(row[price_col]) if price_col and price_col in row else 0.0
 
             if qty_val <= 0 or price_val <= 0.0:
                 continue
@@ -127,7 +145,7 @@ def run_whale_scan():
     conn.close()
 
     if inserted_count == 0:
-        return f"Fetched {len(deals_df)} raw records from NSE, but no new/valid trade rows could be added."
+        return f"Retrieved {len(deals_df)} raw records from NSE, but could not parse quantity/price values from headers: {list(deals_df.columns)}"
 
     return f"Success! Synced and saved {inserted_count} real transactions from NSE."
 
