@@ -9,17 +9,22 @@ st.title("🐋 Institutional Whale Intelligence (Behavioral Analysis)")
 
 with st.sidebar:
     st.header("Data Control")
-    if st.button("⚡ Reset & Fetch Latest Deals from NSE", use_container_width=True):
+    if st.button("⚡ Sync Live Deals from NSE", use_container_width=True):
+        with st.spinner("Connecting to NSE and scanning bulk deals..."):
+            status_message = run_whale_scan()
+        st.info(status_message)
+        st.rerun()
+
+    if st.button("🗑️ Clear Local Database", use_container_width=True):
         if os.path.exists(DB_FILE):
             os.remove(DB_FILE)
-        with st.spinner("Refetching fresh data from NSE..."):
-            status_message = run_whale_scan()
-        st.success(status_message)
+            st.success("Database cleared.")
+            st.rerun()
 
 raw_df, accumulation_df, concentration_df = get_second_order_insights()
 
 if raw_df.empty:
-    st.warning("No data stored yet. Click 'Reset & Fetch Latest Deals from NSE' in the sidebar.")
+    st.warning("No data currently stored. Click '⚡ Sync Live Deals from NSE' in the sidebar to fetch real market data.")
 else:
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Behavior Filters")
@@ -32,7 +37,6 @@ else:
         default=all_behaviors
     )
 
-    # Metrics Summary
     col1, col2, col3, col4 = st.columns(4)
     total_val = raw_df['trade_value_cr'].sum()
     stealth_count = len(accumulation_df[accumulation_df['behavior_profile'] == "Stealth Drip Accumulation"])
