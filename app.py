@@ -4,7 +4,7 @@ import streamlit as st
 from tracker import run_whale_scan, get_second_order_insights, DB_FILE
 
 st.set_page_config(page_title="India Whale Intelligence", layout="wide")
-st.title("🐋 Institutional Whale Intelligence (Behavioral Insights)")
+st.title("🐋 Institutional Whale Intelligence (Behavioral Analysis)")
 
 with st.sidebar:
     st.header("Data Control")
@@ -18,69 +18,83 @@ raw_df, accumulation_df, concentration_df = get_second_order_insights()
 if raw_df.empty:
     st.warning("No data stored yet. Click 'Fetch Latest Deals from NSE' in the sidebar.")
 else:
-    # Sidebar Filters for Behavioral Analysis
+    # Sidebar Behavioral Filters
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Behavior Filters")
     
-    all_behaviors = list(accumulation_df['behavior_profile'].unique())
+    all_behaviors = sorted(list(accumulation_df['behavior_profile'].unique()))
+    
+    # Initialize Session State to prevent filter reset glitches
+    if "selected_behaviors" not in st.session_state:
+        st.session_state.selected_behaviors = all_behaviors
+
     selected_behaviors = st.sidebar.multiselect(
-        "Filter by Market Behavior",
+        "Filter by Market Behavior Profile",
         options=all_behaviors,
-        default=[b for b in all_behaviors if b != "Arbitrage / Intra-day Churn"]
+        default=st.session_state.selected_behaviors
     )
     
+    max_val = float(accumulation_df['total_buy_value_cr'].max()) if not accumulation_df.empty else 10.0
     min_deal_value = st.sidebar.slider(
         "Min Deal Size (₹ Cr)", 
         min_value=0.0, 
-        max_value=float(max(accumulation_df['total_buy_value_cr'].max(), 5.0)), 
-        value=0.5, 
-        step=0.5
+        max_value=max(max_val, 1.0), 
+        value=0.0, 
+        step=0.1
     )
 
-    # Metrics
-    col1, col2, col3 = st.columns(3)
+    # Top Level Metrics
+    col1, col2, col3, col4 = st.columns(4)
     total_val = raw_df['trade_value_cr'].sum()
     stealth_count = len(accumulation_df[accumulation_df['behavior_profile'] == "Stealth Drip Accumulation"])
-    block_count = len(accumulation_df[accumulation_df['behavior_profile'] == "Aggressive Block Buy (>₹10 Cr)"])
+    block_count = len(accumulation_df[accumulation_df['behavior_profile'] == "Aggressive Block Buy (>₹2 Cr)"])
+    directional_count = len(accumulation_df[accumulation_df['behavior_profile'] == "Directional Accumulation"])
 
     col1.metric("Gross Whale Volume", f"₹{total_val:.2f} Cr")
-    col2.metric("Stealth Accumulation Signals", stealth_count)
+    col2.metric("Stealth Accumulations", stealth_count)
     col3.metric("Aggressive Block Buys", block_count)
+    col4.metric("Directional Bets", directional_count)
 
     st.markdown("---")
 
     tab1, tab2, tab3, tab4 = st.tabs([
-        "🧠 Whale Behavior Matrix", 
+        "🧠 Behavioral Matrix", 
         "🎯 Multi-Whale Clusters", 
-        "🏷️ Institutional VWAP Floors", 
+        "🏷️ Benchmark VWAP", 
         "📜 Raw Deals Feed"
     ])
 
     with tab1:
         st.subheader("Whale Behavioral Analysis")
-        st.caption("Classifies transactions based on execution speed, position size, and multi-day patterns.")
+        st.caption("Categorizes entities by execution speed, position size, and multi-day behavior.")
 
-        # Apply Filters
-        filtered_df = accumulation_df[
-            (accumulation_df['behavior_profile'].isin(selected_behaviors)) &
-            ((accumulation_df['total_buy_value_cr'] >= min_deal_value) | (accumulation_df['total_sell_value_cr'] >= min_deal_value))
-        ].sort_values(by='total_buy_value_cr', ascending=False)
+        # Apply Filters Safely
+        if selected_behaviors:
+            filtered_df = accumulation_df[
+                (accumulation_df['behavior_profile'].isin(selected_behaviors)) &
+                ((accumulation_df['total_buy_value_cr'] >= min_deal_value) | (accumulation_df['total_sell_value_cr'] >= min_deal_value))
+            ].sort_values(by='total_buy_value_cr', ascending=False)
+        else:
+            filtered_df = accumulation_df.copy()
 
-        st.dataframe(
-            filtered_df[[
-                'symbol', 'client_name', 'behavior_profile', 'total_buy_value_cr', 
-                'total_sell_value_cr', 'net_quantity', 'vwap_buy_price', 'active_days'
-            ]],
-            column_config={
-                "behavior_profile": st.column_config.TextColumn("Market Behavior"),
-                "total_buy_value_cr": st.column_config.NumberColumn("Bought (₹ Cr)", format="₹%.2f Cr"),
-                "total_sell_value_cr": st.column_config.NumberColumn("Sold (₹ Cr)", format="₹%.2f Cr"),
-                "vwap_buy_price": st.column_config.NumberColumn("Buy VWAP (₹)", format="₹%.2f"),
-                "net_quantity": st.column_config.NumberColumn("Net Shares", format="%d"),
-                "active_days": "Active Days"
-            },
-            use_container_width=True
-        )
+        if not filtered_df.empty:
+            st.dataframe(
+                filtered_df[[
+                    'symbol', 'client_name', 'behavior_profile', 'total_buy_value_cr', 
+                    'total_sell_value_cr', 'net_quantity', 'vwap_buy_price', 'active_days'
+                ]],
+                column_config={
+                    "behavior_profile": st.column_config.TextColumn("Market Behavior Profile"),
+                    "total_buy_value_cr": st.column_config.NumberColumn("Bought (₹ Cr)", format="₹%.2f Cr"),
+                    "total_sell_value_cr": st.column_config.NumberColumn("Sold (₹ Cr)", format="₹%.2f Cr"),
+                    "vwap_buy_price": st.column_config.NumberColumn("Buy VWAP (₹)", format="₹%.2f"),
+                    "net_quantity": st.column_config.NumberColumn("Net Shares", format="%d"),
+                    "active_days": "Active Days"
+                },
+                use_container_width=True
+            )
+        else:
+            st.info("No records match the currently selected filter options.")
 
     with tab2:
         st.subheader("Multi-Whale Cluster Detection")
