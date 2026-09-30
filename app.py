@@ -1,181 +1,165 @@
 import os
-import sys
-
-# Force root directory into sys.path for Streamlit Cloud path resolution
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import numpy as np
+import sqlite3
 import pandas as pd
 import streamlit as st
-from tracker import InstitutionalTracker
+from tracker import run_whale_scan, get_second_order_insights, get_whale_wisdom_analytics, DB_FILE
 
-# Page Setup
-st.set_page_config(
-    page_title="WhaleWisdom NSE | Institutional Alpha Engine",
-    page_icon="🐋",
-    layout="wide",
-)
+st.set_page_config(page_title="WhaleWisdom India | Institutional Intelligence", layout="wide")
 
-st.title("🐋 Institutional Intelligence Engine (NSE)")
+st.title("🐋 WhaleWisdom India: Institutional Intelligence")
+st.caption("Real-time position tracking, fund portfolio composition, and conviction analytics for Indian Equity Markets.")
 
-# Initialize Backend Tracker
-tracker = InstitutionalTracker()
+with st.sidebar:
+    st.header("⚡ Live Data Control")
+    if st.button("Sync Live Deals from NSE", use_container_width=True):
+        with st.spinner("Fetching latest bulk/block transactions from NSE..."):
+            status_message = run_whale_scan()
+        st.sidebar.info(status_message)
+        st.rerun()
 
-# Global Multi-Tab Navigation
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    [
-        "📊 Cash Flow & Bulk Deals",
-        "🎯 Consensus Clusters & Super Investors",
-        "📈 Structural Volume Profile (POC/VAH/VAL)",
-        "🎲 Participant Options & OI Overlay",
-        "⚡ Squeeze & Stealth Absorption (FCI/Dark)",
-    ]
-)
+    if st.button("🗑️ Reset Local Database", use_container_width=True):
+        if os.path.exists(DB_FILE):
+            os.remove(DB_FILE)
+            st.sidebar.success("Database purged.")
+            st.rerun()
 
-# -------------------------------------------------------------
-# TAB 1: INSTITUTIONAL CASH FLOW & BULK DEALS
-# -------------------------------------------------------------
-with tab1:
-    st.subheader("🏦 Stealth Drip & Aggressive Block Flows")
-    st.markdown(
-        "Track institutional cash deployments across NSE bulk/block feeds."
-    )
+raw_df, accumulation_df, concentration_df = get_second_order_insights()
+conviction_df, fund_portfolios_df = get_whale_wisdom_analytics()
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Institutional Net Flow (1D)", "₹1,420 Cr", "+18.4%")
-    col2.metric("FII Net Cash Buy", "₹890 Cr", "+12.1%")
-    col3.metric("DII Net Cash Buy", "₹530 Cr", "+6.3%")
+if raw_df.empty:
+    st.warning("No market data in local database. Click **Sync Live Deals from NSE** in the sidebar to populate real institutional transactions.")
+else:
+    # Top KPI Bar
+    col1, col2, col3, col4, col5 = st.columns(5)
+    total_val = raw_df['trade_value_cr'].sum()
+    unique_funds = raw_df['client_name'].nunique()
+    unique_tickers = raw_df['symbol'].nunique()
+    multi_whale_tickers = len(concentration_df[concentration_df['distinct_whales'] > 1])
+    stealth_acc = len(accumulation_df[accumulation_df['behavior_profile'] == "Stealth Drip Accumulation"])
+
+    col1.metric("Gross Capital Flow", f"₹{total_val:.2f} Cr")
+    col2.metric("Tracked Whales", unique_funds)
+    col3.metric("Target Companies", unique_tickers)
+    col4.metric("Consensus Clusters", multi_whale_tickers)
+    col5.metric("Stealth Accumulations", stealth_acc)
 
     st.markdown("---")
-    st.subheader("Raw Bulk / Block Deal Stream")
 
-    # Sample structural layout for live/uploaded cash deals
-    sample_deals = pd.DataFrame(
-        {
-            "Symbol": ["RELIANCE", "HDFCBANK", "INFY", "TATAMOTORS", "PERSISTENT"],
-            "Client Name": [
-                "SOOCIETE GENERALE",
-                "GOLDMAN SACHS INVESTMENT",
-                "NIPPON INDIA MUTUAL FUND",
-                "ASHISH KACHOLIA",
-                "NALANDA INDIA EQUITY FUND",
-            ],
-            "Deal Type": ["BUY", "BUY", "BUY", "BUY", "BUY"],
-            "Quantity": [1250000, 3100000, 850000, 450000, 210000],
-            "Price": [2980.50, 1640.20, 1890.00, 980.40, 4850.10],
-            "Value (Cr)": [372.56, 508.46, 160.65, 44.11, 101.85],
-        }
-    )
-    st.dataframe(sample_deals, use_container_width=True)
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🏆 High-Conviction Bets",
+        "🏢 Fund Portfolios (13F View)",
+        "🧠 Behavioral Matrix", 
+        "🎯 Consensus Clusters", 
+        "📜 Raw Deals Feed"
+    ])
 
-# -------------------------------------------------------------
-# TAB 2: CONSENSUS CLUSTERS & SUPER INVESTORS
-# -------------------------------------------------------------
-with tab2:
-    st.subheader("🎯 Tier-1 Super Investor Co-Investment Engine")
-    st.markdown(
-        "Filters institutional deal feeds specifically for high-alpha Indian Super Investors."
-    )
+    # Tab 1: WhaleWisdom Conviction Index
+    with tab1:
+        st.subheader("High-Conviction Institutional Buys")
+        st.markdown("Positions ranked by **Whale Conviction Score** (calculated using capital size, multi-day persistence, and net position bias).")
+        
+        if not conviction_df.empty:
+            st.dataframe(
+                conviction_df[[
+                    'latest_date', 'symbol', 'client_name', 'conviction_score', 
+                    'behavior_profile', 'total_buy_value_cr', 'vwap_buy_price', 'active_days'
+                ]],
+                column_config={
+                    "latest_date": "Date",
+                    "symbol": "Ticker",
+                    "client_name": "Institutional Whale",
+                    "conviction_score": st.column_config.NumberColumn("Conviction Score", format="%.2f 🔥"),
+                    "behavior_profile": "Behavior Pattern",
+                    "total_buy_value_cr": st.column_config.NumberColumn("Capital (₹ Cr)", format="₹%.2f Cr"),
+                    "vwap_buy_price": st.column_config.NumberColumn("Est. VWAP Entry", format="₹%.2f"),
+                    "active_days": "Active Days"
+                },
+                use_container_width=True
+            )
 
-    super_inv_df = tracker.filter_super_investors(
-        pd.DataFrame(
-            {
-                "investor_name": [
-                    "ASHISH KACHOLIA",
-                    "NALANDA INDIA EQUITY FUND",
-                    "RADHAKISHAN DAMANI",
-                    "RETAIL TRADER",
-                ],
-                "symbol": ["TATAMOTORS", "PERSISTENT", "VGUARD", "XYZ"],
-                "quantity": [450000, 210000, 1000000, 5000],
-                "price": [980.40, 4850.10, 420.00, 50.00],
-            }
-        )
-    )
+    # Tab 2: Fund Portfolios (WhaleWisdom Style 13F Breakdown)
+    with tab2:
+        st.subheader("Institutional Fund Composition")
+        st.markdown("Inspect total exposure and stock selection per individual fund or Super Investor.")
 
-    if not super_inv_df.empty:
-        st.success("🔥 High-Conviction Super Investor Entries Detected!")
-        st.dataframe(super_inv_df, use_container_width=True)
-    else:
-        st.info("No Tier-1 Super Investor activity detected in recent feed.")
+        if not fund_portfolios_df.empty:
+            selected_fund = st.selectbox("Select a Fund / Investor to inspect:", options=fund_portfolios_df['client_name'].unique())
+            
+            fund_data = fund_portfolios_df[fund_portfolios_df['client_name'] == selected_fund].iloc[0]
+            fund_holdings = accumulation_df[accumulation_df['client_name'] == selected_fund]
 
-# -------------------------------------------------------------
-# TAB 3: VOLUME PROFILE (POC / VAH / VAL)
-# -------------------------------------------------------------
-with tab3:
-    st.subheader("📈 Structural Volume Nodes & Liquidity Pools")
-    st.markdown(
-        "Identifies Point of Control (POC), Value Area High (VAH), and Value Area Low (VAL)."
-    )
+            f_col1, f_col2, f_col3 = st.columns(3)
+            f_col1.metric("Total Capital Deployed", f"₹{fund_data['total_invested_cr']:.2f} Cr")
+            f_col2.metric("Total Capital Divested", f"₹{fund_data['total_divested_cr']:.2f} Cr")
+            f_col3.metric("Stocks Targeted", fund_data['total_stocks'])
 
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        selected_symbol = st.selectbox(
-            "Select Stock for Profile Node Analysis",
-            ["RELIANCE", "HDFCBANK", "INFY"],
-        )
-        st.metric("Point of Control (POC)", "₹2,975.00")
-        st.metric("Value Area High (VAH)", "₹3,010.00")
-        st.metric("Value Area Low (VAL)", "₹2,940.00")
-    with col2:
-        st.info(
-            "💡 Institutional accumulation occurs predominantly within the Value Area ($VAL \leftrightarrow VAH$). Breakthroughs beyond $VAH$ on high FCI indicate structural price discovery."
-        )
+            st.write(f"### Current Active Positions for **{selected_fund}**")
+            st.dataframe(
+                fund_holdings[[
+                    'latest_date', 'symbol', 'behavior_profile', 'total_buy_value_cr', 
+                    'total_sell_value_cr', 'vwap_buy_price', 'active_days'
+                ]],
+                column_config={
+                    "latest_date": "Latest Deal Date",
+                    "symbol": "Ticker",
+                    "behavior_profile": "Strategy",
+                    "total_buy_value_cr": st.column_config.NumberColumn("Buy Exposure", format="₹%.2f Cr"),
+                    "total_sell_value_cr": st.column_config.NumberColumn("Sell Exposure", format="₹%.2f Cr"),
+                    "vwap_buy_price": st.column_config.NumberColumn("Avg Entry Price", format="₹%.2f"),
+                    "active_days": "Days Active"
+                },
+                use_container_width=True
+            )
 
-# -------------------------------------------------------------
-# TAB 4: PARTICIPANT OPTIONS & DERIVATIVES OVERLAY
-# -------------------------------------------------------------
-with tab4:
-    st.subheader("🎲 FII & Proprietary Desk Options Positioning")
-    st.markdown(
-        "Fetches participant-wise Open Interest (OI) from NSE archives to calculate Net Delta Bias and PCR."
-    )
+    # Tab 3: Behavioral Matrix
+    with tab3:
+        st.subheader("Whale Behavioral Analysis")
+        all_behaviors = sorted(list(accumulation_df['behavior_profile'].unique()))
+        selected_behaviors = st.multiselect("Filter Profile:", options=all_behaviors, default=all_behaviors)
 
-    fetch_date = st.date_input(
-        "Select Date for Options Data",
-        value=pd.to_datetime("today") - pd.Timedelta(days=1),
-    )
-    date_str = fetch_date.strftime("%d%m%Y")
+        filtered_df = accumulation_df[accumulation_df['behavior_profile'].isin(selected_behaviors)].sort_values(by='gross_value_cr', ascending=False) if selected_behaviors else accumulation_df.copy()
 
-    if st.button("Fetch Options Positioning from NSE Archives"):
-        with st.spinner("Retrieving participant OI from NSE..."):
-            options_df = tracker.get_options_overlay(date_str)
-
-            if not options_df.empty:
-                st.dataframe(options_df, use_container_width=True)
-
-                st.markdown("### Institutional Bias Highlights")
-                for _, row in options_df.iterrows():
-                    bias = (
-                        "🔥 Bullish Delta"
-                        if row["Net Delta Score"] > 0
-                        else "🐻 Bearish / Hedged"
-                    )
-                    st.metric(
-                        label=f"{row['Client Type']} Net Delta Score",
-                        value=f"{row['Net Delta Score']:,}",
-                        delta=f"PCR: {row['Index Option PCR']} ({bias})",
-                    )
-            else:
-                st.warning(
-                    "No derivatives data found for the selected date. Ensure it was a valid NSE trading day."
-                )
-
-# -------------------------------------------------------------
-# TAB 5: SQUEEZE & STEALTH ABSORPTION (FCI / DARK)
-# -------------------------------------------------------------
-with tab5:
-    st.subheader("⚡ Float Cornering Index (FCI) & Dark Accumulation")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("#### Float Cornering Index (Squeeze Setup)")
-        st.info(
-            "Identifies stocks where institutional net buying has absorbed a large portion of tradable free float."
+        st.dataframe(
+            filtered_df[[
+                'latest_date', 'symbol', 'client_name', 'behavior_profile', 'total_buy_value_cr', 
+                'total_sell_value_cr', 'gross_value_cr', 'vwap_buy_price', 'active_days'
+            ]],
+            column_config={
+                "latest_date": "Deal Date",
+                "behavior_profile": "Profile",
+                "total_buy_value_cr": st.column_config.NumberColumn("Bought (₹ Cr)", format="₹%.4f Cr"),
+                "total_sell_value_cr": st.column_config.NumberColumn("Sold (₹ Cr)", format="₹%.4f Cr"),
+                "gross_value_cr": st.column_config.NumberColumn("Gross Volume (₹ Cr)", format="₹%.4f Cr"),
+                "vwap_buy_price": st.column_config.NumberColumn("Buy VWAP (₹)", format="₹%.2f"),
+                "active_days": "Active Days"
+            },
+            use_container_width=True
         )
 
-    with col2:
-        st.markdown("#### Dark Accumulation Scanner")
-        st.info(
-            "Flags stealth volume absorption: 3x+ volume spikes inside a tight daily price range (<1.5%)."
+    # Tab 4: Multi-Whale Clusters
+    with tab4:
+        st.subheader("Consensus & Overlap Detection")
+        st.write("Companies being bought simultaneously by **multiple distinct institutional whales**.")
+        if not concentration_df.empty:
+            st.dataframe(
+                concentration_df,
+                column_config={
+                    "distinct_whales": "Whale Count",
+                    "whale_list": "Funds Involved",
+                    "total_net_value_cr": st.column_config.NumberColumn("Combined Value", format="₹%.2f Cr"),
+                    "last_active": "Latest Date"
+                },
+                use_container_width=True
+            )
+
+    # Tab 5: Raw Deals Feed
+    with tab5:
+        st.subheader("Complete Bulk Deals Log")
+        st.dataframe(
+            raw_df[['date', 'symbol', 'client_name', 'buy_sell', 'quantity', 'trade_price', 'trade_value_cr']], 
+            column_config={
+                "date": "Transaction Date",
+                "trade_value_cr": st.column_config.NumberColumn("Value (₹ Cr)", format="₹%.4f Cr")
+            },
+            use_container_width=True
         )
