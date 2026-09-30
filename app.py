@@ -1,5 +1,11 @@
-import streamlit as st
+import os
+import sys
+
+# Append root directory to sys.path so Streamlit Cloud detects custom modules
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import pandas as pd
+import streamlit as st
 from tracker import InstitutionalTracker
 
 st.set_page_config(page_title="Institutional Alpha Tracker", layout="wide")
@@ -9,9 +15,12 @@ st.title("⚡ Institutional Alpha Signal Engine")
 # Initialize Tracker Engine
 tracker = InstitutionalTracker()
 
-# Sidebar Setup
+# Sidebar Navigation
 st.sidebar.header("Navigation & Settings")
-selected_view = st.sidebar.radio("Select View", ["Overview", "Options & Derivatives Overlay", "Dark Accumulation"])
+selected_view = st.sidebar.radio(
+    "Select View", 
+    ["Overview", "Options & Derivatives Overlay", "Dark Accumulation Scanner"]
+)
 
 # -------------------------------------------------------------
 # VIEW 1: OVERVIEW & CASH MARKET SIGNALS
@@ -19,10 +28,9 @@ selected_view = st.sidebar.radio("Select View", ["Overview", "Options & Derivati
 if selected_view == "Overview":
     st.subheader("📊 Institutional Cash & Float Cornering Summary")
     st.markdown("""
-    This section monitors high-conviction cash accumulation against tradable free float.
+    Monitors high-conviction cash market accumulation against tradable free float.
     """)
     
-    # Placeholder containers for user dataframes
     col1, col2 = st.columns(2)
     with col1:
         st.info("💡 **Float Cornering Index (FCI)** identifies supply squeezes where whales absorb >2% of free float.")
@@ -34,19 +42,20 @@ if selected_view == "Overview":
 # -------------------------------------------------------------
 elif selected_view == "Options & Derivatives Overlay":
     st.subheader("🎯 Participant-Wise Options & Derivatives Positioning")
-    st.markdown("Tracking FII and Proprietary Desk **Net Delta Scores** and **Put-Call Ratios (PCR)** from NSE Open Interest data.")
+    st.markdown("""
+    Tracking FII and Proprietary Desk **Net Delta Scores** and **Put-Call Ratios (PCR)** from NSE Open Interest data.
+    """)
 
     fetch_date = st.date_input("Select Date for Options Data", value=pd.to_datetime("today") - pd.Timedelta(days=1))
     date_str = fetch_date.strftime("%d%m%Y")
 
     if st.button("Fetch Options Positioning"):
-        with st.spinner("Retrieving participant OI from NSE..."):
+        with st.spinner("Retrieving participant OI from NSE archives..."):
             options_df = tracker.get_options_overlay(date_str)
             
             if not options_df.empty:
                 st.dataframe(options_df, use_container_width=True)
                 
-                # Render key metric highlights
                 st.markdown("### Key Derivatives Signals")
                 for _, row in options_df.iterrows():
                     bias = "🔥 Bullish" if row['Net Delta Score'] > 0 else "🐻 Bearish / Hedged"
@@ -56,12 +65,14 @@ elif selected_view == "Options & Derivatives Overlay":
                         delta=f"PCR: {row['Index Option PCR']} ({bias})"
                     )
             else:
-                st.warning("No options data available for the selected date. Check if it was a trading holiday or non-trading day.")
+                st.warning("No options data available for the selected date. Ensure it was an NSE trading day.")
 
 # -------------------------------------------------------------
 # VIEW 3: DARK ACCUMULATION SCANNER
 # -------------------------------------------------------------
-elif selected_view == "Dark Accumulation":
+elif selected_view == "Dark Accumulation Scanner":
     st.subheader("👁️ Dark Accumulation (Stealth Volume Absorption)")
-    st.markdown("Flags days with 3x+ average volume where prices remain tight (<1.5% range), indicating institutional absorption.")
-    st.info("Upload or link daily OHLCV price quotes to run the Dark Accumulation scanner.")
+    st.markdown("""
+    Flags trading days with **3x+ average volume** where price action remains tight (**<1.5% range**), indicating institutional absorption algorithms.
+    """)
+    st.info("Scanner will execute automatically when daily OHLCV price quotes are fed into the tracker pipeline.")
